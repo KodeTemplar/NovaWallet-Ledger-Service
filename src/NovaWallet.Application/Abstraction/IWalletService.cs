@@ -10,4 +10,6 @@ public interface IWalletService
     Task<ApiResult> GetWalletAsync(string customerId, CancellationToken cancellationToken = default);
 
     Task<ApiResult> CreditWalletAsync(CreditWalletRequest request, string walletId, string actorCustomerId, CancellationToken cancellationToken = default);
+
+    Task<ApiResult> TransferAsync(string customerId, TransferRequest request, CancellationToken cancellationToken = default);
 }

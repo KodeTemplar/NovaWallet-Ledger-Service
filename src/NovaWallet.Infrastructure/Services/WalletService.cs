@@ -16,11 +16,13 @@ public class WalletService : IWalletService
 {
     private readonly NovaWalletDbContext _dbContext;
     private readonly IAuditLogService _auditLogService;
+    private readonly IFinancialLimitService _financialLimitService;
 
-    public WalletService(NovaWalletDbContext dbContext, IAuditLogService auditLogService)
+    public WalletService(NovaWalletDbContext dbContext, IAuditLogService auditLogService, IFinancialLimitService financialLimitService)
     {
         _dbContext = dbContext;
         _auditLogService = auditLogService;
+        _financialLimitService = financialLimitService;
     }
 
     public async Task<ApiResult> CreateWalletAsync(string customerId, CancellationToken cancellationToken = default)
@@ -88,12 +90,10 @@ public class WalletService : IWalletService
 
     public async Task<ApiResult> CreditWalletAsync(CreditWalletRequest request, string walletId, string actorCustomerId, CancellationToken cancellationToken = default)
     {
-        if (!WalletValidation.IsValidCreditAmount(request.Amount))
+        if (!WalletValidation.TryConvertNairaToKobo(request.Amount, out var amountKobo))
         {
             return ApiProblem.Validation("Credit amount must be greater than zero.", WalletErrorCodes.InvalidCreditAmount);
         }
-
-        var amountKobo = checked((long)(request.Amount * 100));
 
         await using var transactionScope = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
@@ -164,6 +164,206 @@ public class WalletService : IWalletService
         await transactionScope.CommitAsync(cancellationToken);
 
         return ApiSuccess<WalletResponse>.Success(ToWalletResponse(wallet), "Wallet credited successfully.");
+    }
+
+    public async Task<ApiResult> TransferAsync(string customerId, TransferRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!WalletValidation.TryConvertNairaToKobo(request.Amount, out var amountKobo))
+        {
+            return ApiProblem.Validation("Transfer amount must be greater than zero and have at most two decimal places.", WalletErrorCodes.InvalidTransferAmount);
+        }
+
+        var sourceWalletId = await _dbContext.Wallets
+            .AsNoTracking()
+            .Where(wallet => wallet.CustomerId == customerId)
+            .Select(wallet => (Guid?)wallet.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (sourceWalletId == null)
+        {
+            return ApiProblem.NotFound("Source wallet was not found for this customer.", WalletErrorCodes.WalletNotFound);
+        }
+
+        if (sourceWalletId.Value == request.DestinationWalletId)
+        {
+            return ApiProblem.Conflict("Source and destination wallets must be different.", WalletErrorCodes.SameWalletTransfer);
+        }
+
+        await using var transactionScope = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        // Both wallets are locked in deterministic order so opposite-direction transfers do not deadlock by taking locks in reverse order.
+        var sourceId = sourceWalletId.Value;
+        var destinationId = request.DestinationWalletId;
+
+        var sourceComesFirst = sourceId.CompareTo(destinationId) <= 0;
+
+        var firstWalletId = sourceComesFirst ? sourceId : destinationId;
+        var secondWalletId = sourceComesFirst ? destinationId : sourceId;
+
+        var firstWallet = await LockWalletAsync(firstWalletId, cancellationToken);
+        var secondWallet = await LockWalletAsync(secondWalletId, cancellationToken);
+
+        var sourceWallet = firstWallet?.Id == sourceId ? firstWallet : secondWallet;
+        var destinationWallet = firstWallet?.Id == destinationId ? firstWallet : secondWallet;
+
+        if (sourceWallet == null)
+        {
+            return ApiProblem.NotFound("Source wallet was not found for this customer.", WalletErrorCodes.WalletNotFound);
+        }
+
+        if (destinationWallet == null)
+        {
+            return ApiProblem.NotFound("Destination wallet was not found.", WalletErrorCodes.WalletNotFound);
+        }
+
+        if (sourceWallet.BalanceKobo < amountKobo)
+        {
+            return ApiProblem.Unprocessable("Sorry, you do not have sufficient funds in your wallet.", WalletErrorCodes.InsufficientFunds);
+        }
+
+        var dailyLimitKobo = await _financialLimitService.GetDailyOutboundTransferLimitKoboAsync(cancellationToken);
+        var watDate = GetCurrentWatDate();
+        var dailyTransferLimit = await GetOrCreateDailyTransferLimitAsync(sourceWallet.Id, watDate, cancellationToken);
+
+        long sourceBalanceAfter;
+        long destinationBalanceAfter;
+        long outboundTotalAfter;
+
+        try
+        {
+            sourceBalanceAfter = checked(sourceWallet.BalanceKobo - amountKobo);
+            destinationBalanceAfter = checked(destinationWallet.BalanceKobo + amountKobo);
+            outboundTotalAfter = checked(dailyTransferLimit.OutboundTotalKobo + amountKobo);
+        }
+        catch (OverflowException)
+        {
+            return ApiProblem.Unprocessable("The transfer amount would exceed supported money limits.", WalletErrorCodes.MoneyOverflow);
+        }
+
+        if (outboundTotalAfter > dailyLimitKobo)
+        {
+            return ApiProblem.Unprocessable("Daily outbound transfer limit would be exceeded.", WalletErrorCodes.DailyOutboundLimitExceeded);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var transactionId = Guid.NewGuid();
+        var reference = $"TRF-{Guid.NewGuid():N}";
+        var sourceBalanceBefore = sourceWallet.BalanceKobo;
+        var destinationBalanceBefore = destinationWallet.BalanceKobo;
+
+        sourceWallet.BalanceKobo = sourceBalanceAfter;
+        destinationWallet.BalanceKobo = destinationBalanceAfter;
+        dailyTransferLimit.OutboundTotalKobo = outboundTotalAfter;
+
+        var financialTransaction = new Transaction
+        {
+            Id = transactionId,
+            Type = TransactionType.Transfer,
+            SourceWalletId = sourceWallet.Id,
+            DestinationWalletId = destinationWallet.Id,
+            AmountKobo = amountKobo,
+            Reference = reference,
+            CreatedAtUtc = now
+        };
+
+        var sourceLedgerEntry = new LedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            WalletId = sourceWallet.Id,
+            Direction = LedgerDirection.Debit,
+            AmountKobo = amountKobo,
+            BalanceAfterKobo = sourceBalanceAfter,
+            CreatedAtUtc = now
+        };
+
+        var destinationLedgerEntry = new LedgerEntry
+        {
+            Id = Guid.NewGuid(),
+            TransactionId = transactionId,
+            WalletId = destinationWallet.Id,
+            Direction = LedgerDirection.Credit,
+            AmountKobo = amountKobo,
+            BalanceAfterKobo = destinationBalanceAfter,
+            CreatedAtUtc = now
+        };
+
+        _dbContext.Transactions.Add(financialTransaction);
+        _dbContext.LedgerEntries.AddRange(sourceLedgerEntry, destinationLedgerEntry);
+
+        await _auditLogService.AddAsync(new AuditRequest
+        {
+            WalletId = sourceWallet.Id,
+            TransactionId = transactionId,
+            MutationType = AuditMutationTypes.TransferDebit,
+            AmountKobo = amountKobo,
+            BalanceBeforeKobo = sourceBalanceBefore,
+            BalanceAfterKobo = sourceBalanceAfter,
+            ActorCustomerId = customerId
+        }, cancellationToken);
+
+        await _auditLogService.AddAsync(new AuditRequest
+        {
+            WalletId = destinationWallet.Id,
+            TransactionId = transactionId,
+            MutationType = AuditMutationTypes.TransferCredit,
+            AmountKobo = amountKobo,
+            BalanceBeforeKobo = destinationBalanceBefore,
+            BalanceAfterKobo = destinationBalanceAfter,
+            ActorCustomerId = customerId
+        }, cancellationToken);
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await transactionScope.CommitAsync(cancellationToken);
+
+        var response = new TransferResponse
+        {
+            TransactionId = transactionId,
+            Reference = reference,
+            SourceCustomerId = sourceWallet.Id,
+            AmountKobo = amountKobo,
+            SourceBalanceAfterKobo = sourceBalanceAfter,
+            FormatedBalance = WalletValidation.FormatAmount(sourceWallet.BalanceKobo),
+            CreatedAtUtc = now
+        };
+
+        return ApiSuccess<TransferResponse>.Success(response, "Transfer completed successfully.");
+    }
+
+    private async Task<Wallet?> LockWalletAsync(Guid walletId, CancellationToken cancellationToken)
+    {
+        return await _dbContext.Wallets
+            .FromSqlInterpolated($"SELECT * FROM [Wallets] WITH (UPDLOCK, ROWLOCK) WHERE [Id] = {walletId}")
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    private async Task<DailyTransferLimit> GetOrCreateDailyTransferLimitAsync(Guid walletId, DateOnly watDate, CancellationToken cancellationToken)
+    {
+        var dailyTransferLimit = await _dbContext.DailyTransferLimits
+            .FromSqlInterpolated($"SELECT * FROM [DailyTransferLimits] WITH (UPDLOCK, ROWLOCK) WHERE [WalletId] = {walletId} AND [WatDate] = {watDate}")
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (dailyTransferLimit != null)
+        {
+            return dailyTransferLimit;
+        }
+
+        dailyTransferLimit = new DailyTransferLimit
+        {
+            WalletId = walletId,
+            WatDate = watDate,
+            OutboundTotalKobo = 0
+        };
+
+        await _dbContext.DailyTransferLimits.AddAsync(dailyTransferLimit, cancellationToken);
+
+        return dailyTransferLimit;
+    }
+
+    private static DateOnly GetCurrentWatDate()
+    {
+        var watNow = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(1));
+        return DateOnly.FromDateTime(watNow.DateTime);
     }
 
     private static WalletResponse ToWalletResponse(Wallet wallet)

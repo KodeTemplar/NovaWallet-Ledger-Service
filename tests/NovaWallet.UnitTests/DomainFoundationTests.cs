@@ -32,4 +32,16 @@ public class DomainFoundationTests
     {
         Assert.False(WalletValidation.IsValidCreditAmount(-1));
     }
+
+    [Fact]
+    public void TransferAmountOfZero_IsRejected()
+    {
+        Assert.False(WalletValidation.IsValidTransferAmount(0));
+    }
+
+    [Fact]
+    public void TransferAmountWithMoreThanTwoDecimalPlaces_IsRejected()
+    {
+        Assert.False(WalletValidation.IsValidTransferAmount(1.001m));
+    }
 }

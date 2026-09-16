@@ -62,4 +62,19 @@ public class WalletsController : ControllerBase
 
         return this.ToActionResult(result);
     }
+
+    [HttpPost("transfers")]
+    public async Task<IActionResult> Transfer(TransferRequest request, CancellationToken cancellationToken)
+    {
+        var customerId = _currentCustomer.CustomerId;
+
+        if (string.IsNullOrWhiteSpace(customerId))
+        {
+            return this.ApiProblem(ApiProblem.Validation("Authenticated customer_id claim is required."));
+        }
+
+        var result = await _walletService.TransferAsync(customerId, request, cancellationToken);
+
+        return this.ToActionResult(result);
+    }
 }
