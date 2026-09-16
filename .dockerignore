@@ -1,0 +1,8 @@
+**/bin
+**/obj
+.git
+.vs
+.dotnet-home
+.dotnet-appdata
+TestResults
+Doc1_TakeHome_Backend_DotNet - FBN.pdf
