@@ -157,6 +157,14 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 
 app.MapControllers();
 
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    app.Logger.LogInformation("NovaWallet Ledger Service is ready");
+    app.Logger.LogInformation("Swagger: http://localhost:8080/swagger");
+    app.Logger.LogInformation("Liveness: http://localhost:8080/health/live");
+    app.Logger.LogInformation("Readiness: http://localhost:8080/health/ready");
+});
+
 app.Run();
 
 public partial class Program;

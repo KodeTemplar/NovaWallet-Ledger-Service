@@ -6,6 +6,22 @@ NovaWallet is an ASP.NET Core wallet ledger API for creating customer wallets, r
 
 The service is designed around financial correctness rather than only CRUD behavior. It uses integer kobo amounts, SQL Server transactions, row/update locking, idempotency records, daily outbound transfer limits, audit records, JWT bearer authentication, and real SQL Server integration tests to protect wallet balances under concurrent requests.
 
+## Quick Start
+
+Start the complete NovaWallet service from the repository root:
+
+```bash
+docker compose up --build
+```
+
+Once the API and SQL Server are running:
+
+- Swagger UI: `http://localhost:8080/swagger`
+- Liveness: `http://localhost:8080/health/live`
+- Readiness: `http://localhost:8080/health/ready`
+
+The API is available on host port `8080`. For the complete setup instructions, testing guide, and end-to-end Swagger walkthrough, see the detailed sections below.
+
 ## 2. Requirements Implemented
 
 | Requirement | Status | Implementation summary |
