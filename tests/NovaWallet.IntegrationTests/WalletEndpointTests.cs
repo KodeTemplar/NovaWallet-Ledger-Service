@@ -95,6 +95,56 @@ public class WalletEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Health_Live_ReturnsOkWithoutAuthentication()
+    {
+        _client.DefaultRequestHeaders.Authorization = null;
+
+        var response = await _client.GetAsync("/health/live");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Health_Ready_ReturnsOkWhenDatabaseIsAvailable()
+    {
+        _client.DefaultRequestHeaders.Authorization = null;
+
+        var response = await _client.GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Response_IncludesTraceIdHeader()
+    {
+        _client.DefaultRequestHeaders.Authorization = null;
+
+        var response = await _client.GetAsync("/health/live");
+
+        Assert.True(response.Headers.TryGetValues("X-Trace-Id", out var values));
+        Assert.False(string.IsNullOrWhiteSpace(values.Single()));
+    }
+
+    [Fact]
+    public async Task ProblemDetails_TraceIdMatchesResponseHeader()
+    {
+        AuthenticateAsCustomer(NewCustomerId());
+
+        var response = await _client.GetAsync("/api/wallets/me");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.True(response.Headers.TryGetValues("X-Trace-Id", out var values));
+
+        var traceId = values.Single();
+        var document = await ReadJsonAsync(response);
+        var problemTraceId = document.RootElement.GetProperty("traceId").GetString();
+
+        Assert.False(string.IsNullOrWhiteSpace(traceId));
+        Assert.False(string.IsNullOrWhiteSpace(problemTraceId));
+        Assert.Equal(traceId, problemTraceId);
+    }
+
+    [Fact]
     public async Task CreditWallet_IncreasesBalance()
     {
         var walletId = await CreateWalletDirectlyAsync(NewCustomerId());
@@ -546,6 +596,49 @@ public class WalletEndpointTests : IAsyncLifetime
         var response = await TransferAsync(destinationWalletId, 1_000, "phase4-success");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transfer_WhenRateLimitExceeded_ReturnsTooManyRequests()
+    {
+        var sourceCustomerId = NewCustomerId();
+        await CreateWalletDirectlyAsync(sourceCustomerId, 10_000);
+        var destinationWalletId = await CreateWalletDirectlyAsync(NewCustomerId());
+        AuthenticateAsCustomer(sourceCustomerId);
+
+        var responses = new List<HttpResponseMessage>();
+
+        for (var i = 0; i < 21; i++)
+        {
+            responses.Add(await TransferAsync(destinationWalletId, 1));
+        }
+
+        Assert.Equal(20, responses.Count(response => response.StatusCode == HttpStatusCode.OK));
+        Assert.Contains(responses, response => response.StatusCode == HttpStatusCode.TooManyRequests);
+    }
+
+    [Fact]
+    public async Task Transfer_RateLimit_IsIndependentPerCustomer()
+    {
+        var customerA = NewCustomerId();
+        var customerB = NewCustomerId();
+        await CreateWalletDirectlyAsync(customerA, 10_000);
+        await CreateWalletDirectlyAsync(customerB, 10_000);
+        var destinationWalletId = await CreateWalletDirectlyAsync(NewCustomerId());
+
+        AuthenticateAsCustomer(customerA);
+        var customerAResponses = new List<HttpResponseMessage>();
+
+        for (var i = 0; i < 21; i++)
+        {
+            customerAResponses.Add(await TransferAsync(destinationWalletId, 1));
+        }
+
+        AuthenticateAsCustomer(customerB);
+        var customerBResponse = await TransferAsync(destinationWalletId, 1);
+
+        Assert.Contains(customerAResponses, response => response.StatusCode == HttpStatusCode.TooManyRequests);
+        Assert.Equal(HttpStatusCode.OK, customerBResponse.StatusCode);
     }
 
     [Fact]

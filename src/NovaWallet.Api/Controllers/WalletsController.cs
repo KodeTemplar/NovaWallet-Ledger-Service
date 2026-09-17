@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using NovaWallet.Api.Abstractions;
 using NovaWallet.Api.Extensions;
 using NovaWallet.Application.Abstraction;
@@ -64,6 +65,7 @@ public class WalletsController : ControllerBase
     }
 
     [HttpPost("transfers")]
+    [EnableRateLimiting("TransferRateLimit")]
     public async Task<IActionResult> Transfer([FromBody] TransferRequest request, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken cancellationToken)
     {
         var customerId = _currentCustomer.CustomerId;

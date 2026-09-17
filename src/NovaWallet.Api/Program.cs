@@ -1,13 +1,18 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using NovaWallet.Api.Abstractions;
+using NovaWallet.Api.Health;
+using NovaWallet.Api.Middleware;
 using NovaWallet.Api.Services;
 using NovaWallet.Api.Startup;
 using NovaWallet.Application.Common.Settings;
 using NovaWallet.Domain.Constants;
 using NovaWallet.Infrastructure;
 using Serilog;
+using System.Threading.RateLimiting;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -62,6 +67,27 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy(AuthorizationPolicies.PrivilegedWalletCredit, policy => policy.RequireRole(ApplicationRoles.All));
 });
 
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("TransferRateLimit", context =>
+    {
+        var customerId = context.User.FindFirst("customer_id")?.Value;
+        var partitionKey = string.IsNullOrWhiteSpace(customerId) ? "anonymous" : customerId;
+
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 20,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+        });
+    });
+});
+
+builder.Services.AddHealthChecks()
+    .AddCheck<NovaWalletDbHealthCheck>("database", tags: ["ready"]);
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -108,13 +134,26 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseMiddleware<TraceIdMiddleware>();
+
 app.UseSerilogRequestLogging(options =>
 {
     options.MessageTemplate = "Handled {RequestMethod} {RequestPath} with {StatusCode}";
 });
 
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
+
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+}).AllowAnonymous();
+
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = healthCheck => healthCheck.Tags.Contains("ready")
+}).AllowAnonymous();
 
 app.MapControllers();
 
