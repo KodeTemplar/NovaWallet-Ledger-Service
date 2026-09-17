@@ -22,6 +22,36 @@ Once the API and SQL Server are running:
 
 The API is available on host port `8080`. For the complete setup instructions, testing guide, and end-to-end Swagger walkthrough, see the detailed sections below.
 
+### Demo Roles & Permissions
+
+Normal customer operations do not require a privileged role. Wallet ownership is determined from the authenticated JWT `customer_id` claim.
+
+```json
+{
+  "customerId": "CUST01",
+  "roles": []
+}
+```
+
+This token can be used for CUST01's normal customer operations, such as creating/retrieving their wallet, transferring from their wallet, and viewing their statement.
+
+```json
+{
+  "customerId": "nip-simulator-001",
+  "roles": ["nip_simulator"]
+}
+```
+
+This token can be used to test the privileged inbound wallet credit endpoint: `POST /api/wallets/{walletId}/credits`.
+
+| Role | Purpose | Can do | Cannot do |
+| --- | --- | --- | --- |
+| `nip_simulator` | Simulates an external NIP/system funding actor. | Satisfies `PrivilegedWalletCredit` and can call `POST /api/wallets/{walletId}/credits`. | Does not bypass wallet ownership rules for normal customer operations. |
+| `system` | Represents a trusted system actor for the same privileged credit policy. | Satisfies `PrivilegedWalletCredit` and can call `POST /api/wallets/{walletId}/credits`. | Does not bypass all authorization. |
+| `admin` | Represents an administrative actor for the same privileged credit policy. | Satisfies `PrivilegedWalletCredit` and can call `POST /api/wallets/{walletId}/credits`. | Does not have unrestricted access or "do everything" permissions. |
+
+Authentication verifies who the caller is. The `customer_id` claim establishes customer wallet ownership. Roles authorize privileged operations such as inbound wallet credit.
+
 ## 2. Requirements Implemented
 
 | Requirement | Status | Implementation summary |
