@@ -1,6 +1,7 @@
-using NovaWallet.Api.Abstractions;
+using Microsoft.AspNetCore.Http;
+using NovaWallet.Application.Abstraction;
 
-namespace NovaWallet.Api.Services;
+namespace NovaWallet.Infrastructure.Services;
 
 public class CurrentCustomer : ICurrentCustomer
 {

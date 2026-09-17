@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
-using NovaWallet.Api.Abstractions;
 using NovaWallet.Api.Extensions;
 using NovaWallet.Application.Abstraction;
 using NovaWallet.Application.Common.Responses;

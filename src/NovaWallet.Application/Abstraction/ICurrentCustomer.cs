@@ -1,4 +1,4 @@
-namespace NovaWallet.Api.Abstractions;
+namespace NovaWallet.Application.Abstraction;
 
 public interface ICurrentCustomer
 {

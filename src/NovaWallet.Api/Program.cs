@@ -3,10 +3,7 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
-using NovaWallet.Api.Abstractions;
-using NovaWallet.Api.Health;
 using NovaWallet.Api.Middleware;
-using NovaWallet.Api.Services;
 using NovaWallet.Api.Startup;
 using NovaWallet.Application.Common.Settings;
 using NovaWallet.Domain.Constants;
@@ -14,6 +11,9 @@ using NovaWallet.Infrastructure;
 using Serilog;
 using System.Threading.RateLimiting;
 using System.Text;
+using NovaWallet.Application.Abstraction;
+using NovaWallet.Infrastructure.Health;
+using NovaWallet.Infrastructure.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 

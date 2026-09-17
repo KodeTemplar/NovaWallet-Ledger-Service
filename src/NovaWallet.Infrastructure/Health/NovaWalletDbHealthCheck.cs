@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using NovaWallet.Infrastructure.Persistence;
 
-namespace NovaWallet.Api.Health;
+namespace NovaWallet.Infrastructure.Health;
 
 public sealed class NovaWalletDbHealthCheck : IHealthCheck
 {

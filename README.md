@@ -22,6 +22,29 @@ Once the API and SQL Server are running:
 
 The API is available on host port `8080`. For the complete setup instructions, testing guide, and end-to-end Swagger walkthrough, see the detailed sections below.
 
+### Swagger Authentication
+
+After generating a JWT using the demo-token endpoint:
+
+1. Copy only the JWT token value.
+2. Click the **Authorize** button in Swagger.
+3. Paste the token directly into the authorization field.
+4. Do NOT prefix the token with `Bearer`.
+
+Correct:
+
+```text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Incorrect:
+
+```text
+Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+Swagger is configured with the HTTP `bearer` security scheme, so it automatically applies the `Bearer` scheme when sending authenticated requests. Paste only the raw JWT token.
+
 ### Demo Roles & Permissions
 
 Normal customer operations do not require a privileged role. Wallet ownership is determined from the authenticated JWT `customer_id` claim.
