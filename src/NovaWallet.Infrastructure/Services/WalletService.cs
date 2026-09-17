@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NovaWallet.Application.Models.Common;
 using NovaWallet.Application.Abstraction;
 using NovaWallet.Application.Common;
 using NovaWallet.Application.Common.Responses;
@@ -9,6 +10,10 @@ using NovaWallet.Domain.Constants;
 using NovaWallet.Domain.Entities;
 using NovaWallet.Domain.Enums;
 using NovaWallet.Infrastructure.Persistence;
+using System.Data;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace NovaWallet.Infrastructure.Services;
 
@@ -166,12 +171,57 @@ public class WalletService : IWalletService
         return ApiSuccess<WalletResponse>.Success(ToWalletResponse(wallet), "Wallet credited successfully.");
     }
 
-    public async Task<ApiResult> TransferAsync(string customerId, TransferRequest request, CancellationToken cancellationToken = default)
+    public async Task<ApiResult> TransferAsync(string customerId, string idempotencyKey, TransferRequest request, CancellationToken cancellationToken = default)
     {
         if (!WalletValidation.TryConvertNairaToKobo(request.Amount, out var amountKobo))
         {
             return ApiProblem.Validation("Transfer amount must be greater than zero and have at most two decimal places.", WalletErrorCodes.InvalidTransferAmount);
         }
+
+        var normalizedIdempotencyKey = idempotencyKey?.Trim();
+
+        if (string.IsNullOrWhiteSpace(normalizedIdempotencyKey) || normalizedIdempotencyKey.Length > 128)
+        {
+            return ApiProblem.Validation("Idempotency-Key is required and must be 128 characters or fewer.", WalletErrorCodes.MissingIdempotencyKey);
+        }
+
+        const string transferEndpoint = "POST /api/wallets/transfers";
+        var requestHash = BuildTransferRequestHash(request.DestinationWalletId, amountKobo);
+
+        await using var transactionScope = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+
+        var idempotencyRecord = await LockIdempotencyRecordAsync(customerId, transferEndpoint, normalizedIdempotencyKey, cancellationToken);
+
+        if (idempotencyRecord != null)
+        {
+            if (idempotencyRecord.RequestHash != requestHash)
+            {
+                return ApiProblem.Conflict("Idempotency-Key was already used with a different transfer payload.", WalletErrorCodes.IdempotencyKeyConflict);
+            }
+
+            if (idempotencyRecord.Status == IdempotencyStatus.Succeeded && !string.IsNullOrWhiteSpace(idempotencyRecord.ResponseBodyJson))
+            {
+                var replay = JsonSerializer.Deserialize<ApiSuccess<TransferResponse>>(idempotencyRecord.ResponseBodyJson);
+                return replay is null
+                    ? ApiProblem.Conflict("Stored idempotency response could not be replayed.", WalletErrorCodes.IdempotencyKeyConflict)
+                    : replay;
+            }
+
+            return ApiProblem.Conflict("A request with this Idempotency-Key is already processing.", WalletErrorCodes.IdempotencyRequestProcessing);
+        }
+
+        idempotencyRecord = new IdempotencyRecord
+        {
+            Id = Guid.NewGuid(),
+            Key = normalizedIdempotencyKey,
+            CustomerId = customerId,
+            Endpoint = transferEndpoint,
+            RequestHash = requestHash,
+            Status = IdempotencyStatus.Processing,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        };
+
+        await _dbContext.IdempotencyRecords.AddAsync(idempotencyRecord, cancellationToken);
 
         var sourceWalletId = await _dbContext.Wallets
             .AsNoTracking()
@@ -189,8 +239,6 @@ public class WalletService : IWalletService
             return ApiProblem.Conflict("Source and destination wallets must be different.", WalletErrorCodes.SameWalletTransfer);
         }
 
-        await using var transactionScope = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
-
         // Both wallets are locked in deterministic order so opposite-direction transfers do not deadlock by taking locks in reverse order.
         var sourceId = sourceWalletId.Value;
         var destinationId = request.DestinationWalletId;
@@ -203,8 +251,8 @@ public class WalletService : IWalletService
         var firstWallet = await LockWalletAsync(firstWalletId, cancellationToken);
         var secondWallet = await LockWalletAsync(secondWalletId, cancellationToken);
 
-        var sourceWallet = firstWallet?.Id == sourceId ? firstWallet : secondWallet;
-        var destinationWallet = firstWallet?.Id == destinationId ? firstWallet : secondWallet;
+        var sourceWallet = firstWallet?.Id == sourceId ? firstWallet : secondWallet?.Id == sourceId ? secondWallet : null;
+        var destinationWallet = firstWallet?.Id == destinationId ? firstWallet : secondWallet?.Id == destinationId ? secondWallet : null;
 
         if (sourceWallet == null)
         {
@@ -313,21 +361,96 @@ public class WalletService : IWalletService
             ActorCustomerId = customerId
         }, cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await transactionScope.CommitAsync(cancellationToken);
-
         var response = new TransferResponse
         {
             TransactionId = transactionId,
             Reference = reference,
-            SourceCustomerId = sourceWallet.Id,
+            SourceWalletId = sourceWallet.Id,
             AmountKobo = amountKobo,
             SourceBalanceAfterKobo = sourceBalanceAfter,
             FormatedBalance = WalletValidation.FormatAmount(sourceWallet.BalanceKobo),
             CreatedAtUtc = now
         };
 
-        return ApiSuccess<TransferResponse>.Success(response, "Transfer completed successfully.");
+        var success = ApiSuccess<TransferResponse>.Success(response, "Transfer completed successfully.");
+        idempotencyRecord.Status = IdempotencyStatus.Succeeded;
+        idempotencyRecord.ResponseStatusCode = success.StatusCode;
+        idempotencyRecord.ResponseBodyJson = JsonSerializer.Serialize(success);
+        idempotencyRecord.CompletedAtUtc = DateTimeOffset.UtcNow;
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await transactionScope.CommitAsync(cancellationToken);
+
+        return success;
+    }
+
+    public async Task<ApiResult> GetStatementAsync(string customerId, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default)
+    {
+        if (page < 1)
+        {
+            return ApiProblem.Validation("Page must be greater than zero.", WalletErrorCodes.InvalidStatementPage);
+        }
+
+        if (pageSize < 1 || pageSize > 100)
+        {
+            return ApiProblem.Validation("PageSize must be between 1 and 100.", WalletErrorCodes.InvalidStatementPageSize);
+        }
+
+        var walletId = await _dbContext.Wallets
+            .AsNoTracking()
+            .Where(wallet => wallet.CustomerId == customerId)
+            .Select(wallet => (Guid?)wallet.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (walletId == null)
+        {
+            return ApiProblem.NotFound("Wallet was not found for this customer.", WalletErrorCodes.WalletNotFound);
+        }
+
+        var query = from ledgerEntry in _dbContext.LedgerEntries.AsNoTracking()
+                    join transaction in _dbContext.Transactions.AsNoTracking() on ledgerEntry.TransactionId equals transaction.Id
+                    where ledgerEntry.WalletId == walletId.Value
+                    orderby ledgerEntry.CreatedAtUtc descending, ledgerEntry.Id descending
+                    select new StatementItemResponse
+                    {
+                        TransactionId = transaction.Id,
+                        Reference = transaction.Reference,
+                        TransactionType = transaction.Type.ToString(),
+                        Direction = ledgerEntry.Direction.ToString(),
+                        AmountKobo = ledgerEntry.AmountKobo,
+                        BalanceAfterKobo = ledgerEntry.BalanceAfterKobo,
+                        CounterpartyWalletId = ledgerEntry.Direction == LedgerDirection.Debit ? transaction.DestinationWalletId : transaction.SourceWalletId,
+                        CreatedAtUtc = ledgerEntry.CreatedAtUtc
+                    };
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        var items = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
+        var totalPages = totalCount == 0 ? 0 : (totalCount + pageSize - 1) / pageSize;
+
+        var response = new PaginatedResponse<StatementItemResponse>
+        {
+            Items = items,
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount,
+            TotalPages = totalPages
+        };
+
+        return ApiSuccess<PaginatedResponse<StatementItemResponse>>.Success(response, "Wallet statement retrieved successfully.");
+    }
+
+    private async Task<IdempotencyRecord?> LockIdempotencyRecordAsync(string customerId, string endpoint, string key, CancellationToken cancellationToken)
+    {
+        return await _dbContext.IdempotencyRecords
+            .FromSqlInterpolated($"SELECT * FROM [IdempotencyRecords] WITH (UPDLOCK, HOLDLOCK) WHERE [CustomerId] = {customerId} AND [Endpoint] = {endpoint} AND [Key] = {key}")
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    private static string BuildTransferRequestHash(Guid destinationWalletId, long amountKobo)
+    {
+        var canonicalPayload = $"{destinationWalletId:D}:{amountKobo}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonicalPayload));
+        return Convert.ToHexString(hash);
     }
 
     private async Task<Wallet?> LockWalletAsync(Guid walletId, CancellationToken cancellationToken)

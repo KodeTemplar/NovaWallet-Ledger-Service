@@ -6,9 +6,9 @@ public class TransferResponse
 
     public string Reference { get; set; } = string.Empty;
 
-    public string FormatedBalance { get; set; }
+    public string FormatedBalance { get; set; } = string.Empty;
 
-    public Guid SourceCustomerId { get; set; }
+    public Guid SourceWalletId { get; set; }
 
     public long AmountKobo { get; set; }
 

@@ -11,4 +11,9 @@ public static class WalletErrorCodes
     public const string InsufficientFunds = "INSUFFICIENT_FUNDS";
     public const string DailyOutboundLimitExceeded = "DAILY_OUTBOUND_LIMIT_EXCEEDED";
     public const string MoneyOverflow = "MONEY_OVERFLOW";
+    public const string MissingIdempotencyKey = "MISSING_IDEMPOTENCY_KEY";
+    public const string IdempotencyKeyConflict = "IDEMPOTENCY_KEY_CONFLICT";
+    public const string IdempotencyRequestProcessing = "IDEMPOTENCY_REQUEST_PROCESSING";
+    public const string InvalidStatementPage = "INVALID_STATEMENT_PAGE";
+    public const string InvalidStatementPageSize = "INVALID_STATEMENT_PAGE_SIZE";
 }

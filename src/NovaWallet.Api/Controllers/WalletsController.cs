@@ -64,7 +64,7 @@ public class WalletsController : ControllerBase
     }
 
     [HttpPost("transfers")]
-    public async Task<IActionResult> Transfer(TransferRequest request, CancellationToken cancellationToken)
+    public async Task<IActionResult> Transfer([FromBody] TransferRequest request, [FromHeader(Name = "Idempotency-Key")] string? idempotencyKey, CancellationToken cancellationToken)
     {
         var customerId = _currentCustomer.CustomerId;
 
@@ -73,7 +73,27 @@ public class WalletsController : ControllerBase
             return this.ApiProblem(ApiProblem.Validation("Authenticated customer_id claim is required."));
         }
 
-        var result = await _walletService.TransferAsync(customerId, request, cancellationToken);
+        if (string.IsNullOrWhiteSpace(idempotencyKey))
+        {
+            return this.ApiProblem(ApiProblem.Validation("Idempotency-Key header is required.", WalletErrorCodes.MissingIdempotencyKey));
+        }
+
+        var result = await _walletService.TransferAsync(customerId, idempotencyKey, request, cancellationToken);
+
+        return this.ToActionResult(result);
+    }
+
+    [HttpGet("me/statements")]
+    public async Task<IActionResult> GetStatement([FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+    {
+        var customerId = _currentCustomer.CustomerId;
+
+        if (string.IsNullOrWhiteSpace(customerId))
+        {
+            return this.ApiProblem(ApiProblem.Validation("Authenticated customer_id claim is required."));
+        }
+
+        var result = await _walletService.GetStatementAsync(customerId, page, pageSize, cancellationToken);
 
         return this.ToActionResult(result);
     }
