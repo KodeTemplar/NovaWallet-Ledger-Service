@@ -4,5 +4,5 @@ public class TransferRequest
 {
     public Guid DestinationWalletId { get; set; }
 
-    public decimal Amount { get; set; }
+    public long AmountKobo { get; set; }
 }

@@ -95,10 +95,12 @@ public class WalletService : IWalletService
 
     public async Task<ApiResult> CreditWalletAsync(CreditWalletRequest request, string walletId, string actorCustomerId, CancellationToken cancellationToken = default)
     {
-        if (!WalletValidation.TryConvertNairaToKobo(request.Amount, out var amountKobo))
+        if (!WalletValidation.IsValidCreditAmount(request.AmountKobo))
         {
             return ApiProblem.Validation("Credit amount must be greater than zero.", WalletErrorCodes.InvalidCreditAmount);
         }
+
+        var amountKobo = request.AmountKobo;
 
         await using var transactionScope = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
@@ -173,10 +175,12 @@ public class WalletService : IWalletService
 
     public async Task<ApiResult> TransferAsync(string customerId, string idempotencyKey, TransferRequest request, CancellationToken cancellationToken = default)
     {
-        if (!WalletValidation.TryConvertNairaToKobo(request.Amount, out var amountKobo))
+        if (!WalletValidation.IsValidTransferAmount(request.AmountKobo))
         {
-            return ApiProblem.Validation("Transfer amount must be greater than zero and have at most two decimal places.", WalletErrorCodes.InvalidTransferAmount);
+            return ApiProblem.Validation("Transfer amount must be greater than zero.", WalletErrorCodes.InvalidTransferAmount);
         }
+
+        var amountKobo = request.AmountKobo;
 
         var normalizedIdempotencyKey = idempotencyKey?.Trim();
 
@@ -496,7 +500,6 @@ public class WalletService : IWalletService
             WalletId = wallet.Id,
             CustomerId = wallet.CustomerId,
             Currency = wallet.Currency,
-            Balance = wallet.BalanceKobo / 100m,
             BalanceKobo = wallet.BalanceKobo,
             FormattedBalance = WalletValidation.FormatAmount(wallet.BalanceKobo),
             CreatedAtUtc = wallet.CreatedAtUtc

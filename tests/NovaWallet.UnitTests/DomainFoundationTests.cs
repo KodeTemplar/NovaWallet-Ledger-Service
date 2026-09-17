@@ -40,8 +40,21 @@ public class DomainFoundationTests
     }
 
     [Fact]
-    public void TransferAmountWithMoreThanTwoDecimalPlaces_IsRejected()
+    public void NegativeTransferAmount_IsRejected()
     {
-        Assert.False(WalletValidation.IsValidTransferAmount(1.001m));
+        Assert.False(WalletValidation.IsValidTransferAmount(-1));
+    }
+
+    [Fact]
+    public void PositiveIntegerKoboAmount_IsAccepted()
+    {
+        Assert.True(WalletValidation.IsValidCreditAmount(1));
+        Assert.True(WalletValidation.IsValidTransferAmount(1));
+    }
+
+    [Fact]
+    public void FormatAmount_UsesIntegerKoboFormatting()
+    {
+        Assert.Equal($"{CurrencyCodes.NairaSymbol}1,234.05", WalletValidation.FormatAmount(123_405));
     }
 }

@@ -8,8 +8,8 @@ public class WalletResponse
 
     public string Currency { get; set; } = string.Empty;
 
-    public decimal Balance { get; set; }
     public long BalanceKobo { get; set; }
+
     public string FormattedBalance { get; set; } = string.Empty;
 
     public DateTimeOffset CreatedAtUtc { get; set; }
